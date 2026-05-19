@@ -24,9 +24,29 @@
 --   RESULT 2 — Bucket summary (weighted averages)
 --   RESULT 3 — Item-level detail
 --
--- April 2026 FP_PH results (verified):
---   Not Retained (220 vendors): TPC 69.1% | DA 85.0% | ADAR 0.2%
---   Retained     (187 vendors): TPC 78.9% | DA 87.9% | ADAR 1.1%
+-- Live window — ASYMMETRIC +15 day buffer:
+--   tmp_best_match uses  menu_submitted_at → sf_active_at + 15 days
+--   tmp_live_only  uses  menu_submitted_at → sf_active_at  (original only)
+--
+--   TPC denominator = n_live_matched(extended) + n_live_only(original)
+--                   = n_orig_live + n_buffer_matched
+--
+--   Buffer items (sf_active_at → sf_active_at + 15d):
+--     • Matched to a draft item  → added to BOTH numerator AND denominator
+--       (captures staged rollouts; can only IMPROVE TPC)
+--     • NOT matched to any draft → excluded from BOTH
+--       (never penalises TPC for vendor menu growth after activation)
+--
+-- April 2026 FP_PH results (verified, asymmetric +15d window):
+--   Not Retained (220 vendors): TPC 73.7% | DA 85.0% | ADAR 0.2%
+--   Retained     (187 vendors): TPC 81.5% | DA 87.9% | ADAR 1.1%
+--
+-- TPC bucket distribution:
+--   Bucket        Not Retained   Retained
+--   Above 90%     39.1%          38.5%   ← converged; not a differentiator
+--   80-90%        15.0%          33.2%   ← CLEAREST signal (2.2x more likely to retain)
+--   70-80%        12.7%           9.1%   ← neutral zone
+--   70% or below  33.2%          19.3%   ← 1.7x more likely to NOT retain
 -- ================================================================
 
 CREATE TEMP FUNCTION clean_text(s STRING) RETURNS STRING AS (
@@ -141,7 +161,11 @@ draft_items AS (
     AND CHAR_LENGTH(item.name) > 0
 ),
 
--- Primary live items only (Choice_* excluded via attribute filter)
+-- Primary live items: extended window (menu_submitted → sf_active + 15 days)
+-- in_original_window = TRUE for items present at or before sf_active_at
+--   → always count in TPC denominator
+-- in_original_window = FALSE = buffer items (sf_active_at → sf_active_at + 15d)
+--   → count in denominator ONLY if matched to a draft item (asymmetric: can only improve TPC)
 live_items AS (
   SELECT DISTINCT
     ps.content.vendor.vendor_id        AS vendor_id,
@@ -157,7 +181,7 @@ live_items AS (
      AND ps.content.vendor.vendor_id = ov.vendor_id
      AND ps.timestamp BETWEEN
            COALESCE(TIMESTAMP(mcc.menu_submitted_at), TIMESTAMP(scc.catalog_created_at))
-           AND TIMESTAMP(sfa.sf_active_at)
+           AND TIMESTAMP_ADD(TIMESTAMP(sfa.sf_active_at), INTERVAL 15 DAY)
      AND ps.created_date >= DATE_SUB(CURRENT_DATE, INTERVAL 2 MONTH)
   WHERE NOT COALESCE(ps.content.deleted, FALSE)
     AND NOT EXISTS (
