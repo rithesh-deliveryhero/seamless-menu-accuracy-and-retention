@@ -141,13 +141,15 @@ UNNEST(JSON_QUERY_ARRAY(opt, '$.option_selections'))                   AS sel
 
 **Example — vendor `wu5t`:** "Wings" item had `additional_item_info` containing flavor options (buffalo, teriyaki, etc.) and size options (solo, duo, barkada sharing). These were invisible to the original `draft_menu_items` CTE which only unnested `items[]`.
 
-### 4. No fuzzy name matching
+### 4. Name matching — v1 exact only, v3 bidirectional word-overlap
 
-Early versions used `EDIT_DISTANCE` for item matching. This caused:
+**v1/v2** used `EDIT_DISTANCE` for fuzzy matching which caused:
 - `"squid balls"` → matched to `"squid rolls"` (vendor `a2de` / grid `HTW1VX`)
 - `"chicken nuggets"` → matched to `"chicken wings"` (same vendor)
 
-These are clearly different products. **Fix:** Exact match only after `clean_text()` normalisation. `clean_text()` handles `&`/`and` and punctuation so genuine near-duplicates still match.
+**v2 fix:** Exact match only after `clean_text()` normalisation.
+
+**v3 fix:** Bidirectional word-overlap ≥ 60% — both directions must clear the threshold, which closes the single-word trap (`"chicken"` ≠ `"chicken wings"`) while still catching genuine reorderings (`"iced caramel latte"` = `"caramel iced latte"`). Exact match is always preferred; fuzzy fires only as fallback.
 
 ### 5. Shared menus referencing grid IDs instead of vendor IDs
 
@@ -177,7 +179,43 @@ sql/
 MDS_MenuAccuracy_Project.md   # Full reference: pipeline, methods, edge cases
 ```
 
-**To run the full analysis:** execute `sql/accuracy_model/MenuAccuracy_FP_PH_Apr2026_Full_Extract.sql` in BigQuery. Produces two result sets — vendor-level scores and item-level detail.
+**To run the full analysis (v3 — recommended):** execute `sql/accuracy_model/MenuAccuracy_Model_v3_FP_PH_Apr2026.sql` in BigQuery. Produces three result sets — vendor-level scores, bucket summary, and item-level detail.
+
+**Earlier versions** (`MenuAccuracy_FP_PH_Apr2026_Full_Extract.sql`, `MenuAccuracy_FP_PH_Apr2026_Scaled.sql`) are retained for reference. v3 supersedes them.
+
+---
+
+## Model versions
+
+### v1 / v2 — `MenuAccuracy_FP_PH_Apr2026_Full_Extract.sql`
+- Three metrics: TPC, DA, CA (Choice Accuracy) + composite score
+- Edit-distance fuzzy matching (caused wrong matches — see edge case 4)
+- AI descriptions included in DA and penalised when not retained
+- Choice groups included in item comparison
+
+### v3 — `MenuAccuracy_Model_v3_FP_PH_Apr2026.sql` *(current)*
+- Three metrics: TPC, DA (non-AI only), ADAR (new — AI adoption rate)
+- Choice groups fully excluded from all CTEs — primary items only
+- Bidirectional word-overlap name matching (≥60% both directions)
+- AI descriptions separated out: excluded from DA, tracked via ADAR
+- No composite score — metrics are independent
+
+**April 2026 FP_PH verified results (v3):**
+
+| Metric | Not Retained (220 vendors) | Retained (187 vendors) |
+|---|---|---|
+| TPC | 69.1% | 78.9% |
+| DA (non-AI descriptions) | 85.0% | 87.9% |
+| ADAR (AI desc adoption) | 0.2% | 1.1% |
+
+**TPC distribution by bucket:**
+
+| TPC bucket | Not Retained | % | Retained | % |
+|---|---|---|---|---|
+| Above 90% | 76 | 34.5% | 71 | 38.0% |
+| 80–90% | 31 | 14.1% | 44 | 23.5% |
+| 70–80% | 22 | 10.0% | 24 | 12.8% |
+| 70% or below | 91 | **41.4%** | 48 | **25.7%** |
 
 ---
 
